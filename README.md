@@ -1,2 +1,2 @@
 # SpartaSlackbot
-Slack integration using Sparta
+Slack bot example application using [Sparta](https://github.com/mweagle/Sparta)
