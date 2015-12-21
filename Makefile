@@ -44,6 +44,9 @@ tags:
 provision: build
 	go run slack.go --level info provision --s3Bucket $(S3_BUCKET)
 
+delete:
+	GO15VENDOREXPERIMENT=1 go run slack.go delete
+
 describe: build
 	rm -rf ./graph.html
 	go run slack.go describe
