@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 
 	"github.com/Sirupsen/logrus"
 	sparta "github.com/mweagle/Sparta"
@@ -16,9 +15,9 @@ import (
 type slackLambdaJSONEvent struct {
 	// HTTPMethod
 	Method string `json:"method"`
-	// Body, if available.  This is going to be an interface s.t. we can support
+	// BodyParams, if available.  This is going to be an interface s.t. we can support
 	// testing through APIGateway, which by default sends 'application/json'
-	Body interface{} `json:"body"`
+	BodyParams map[string]interface{} `json:"body"`
 	// Whitelisted HTTP headers
 	Headers map[string]string `json:"headers"`
 	// Whitelisted HTTP query params
@@ -32,42 +31,35 @@ type slackLambdaJSONEvent struct {
 ////////////////////////////////////////////////////////////////////////////////
 // Hello world event handler
 //
-func helloSlackbot(event *json.RawMessage,
-	context *sparta.LambdaContext,
-	w http.ResponseWriter,
-	logger *logrus.Logger) {
+func helloSlackbot(w http.ResponseWriter, r *http.Request) {
+	logger, _ := r.Context().Value(sparta.ContextKeyLogger).(*logrus.Logger)
 
 	// 1. Unmarshal the primary event
+	decoder := json.NewDecoder(r.Body)
+	defer r.Body.Close()
 	var lambdaEvent slackLambdaJSONEvent
-	err := json.Unmarshal([]byte(*event), &lambdaEvent)
+	err := decoder.Decode(&lambdaEvent)
 	if err != nil {
 		logger.Error("Failed to unmarshal event data: ", err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+
+	logger.WithFields(logrus.Fields{
+		"BodyType":  fmt.Sprintf("%T", lambdaEvent.BodyParams),
+		"BodyValue": fmt.Sprintf("%+v", lambdaEvent.BodyParams),
+	}).Info("Slack slashcommand values")
 
 	// 2. Conditionally unmarshal to get the Slack text.  See
 	// https://api.slack.com/slash-commands
 	// for the value name list
-	requestParams := url.Values{}
-	if bodyData, ok := lambdaEvent.Body.(string); ok {
-		requestParams, err = url.ParseQuery(bodyData)
-		if err != nil {
-			logger.Error("Failed to parse query: ", err.Error())
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-		logger.WithFields(logrus.Fields{
-			"Values": requestParams,
-		}).Info("Slack slashcommand values")
-	} else {
-		logger.Info("Event body empty")
-	}
 
 	// 3. Create the response
 	// Slack formatting:
 	// https://api.slack.com/docs/formatting
-	responseText := "You talkin to me?"
-	for _, eachLine := range requestParams["text"] {
-		responseText += fmt.Sprintf("\n>>> %s", eachLine)
+	responseText := "Here's what I understood"
+	for eachKey, eachParam := range lambdaEvent.BodyParams {
+		responseText += fmt.Sprintf("\n*%s*: %+v", eachKey, eachParam)
 	}
 
 	// 4. Setup the response object:
@@ -75,19 +67,24 @@ func helloSlackbot(event *json.RawMessage,
 	responseData := sparta.ArbitraryJSONObject{
 		"response_type": "in_channel",
 		"text":          responseText,
+		"mrkdwn":        true,
 	}
 	// 5. Send it off
 	responseBody, err := json.Marshal(responseData)
 	if err != nil {
 		logger.Error("Failed to marshal response: ", err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	fmt.Fprint(w, string(responseBody))
+	w.Header().Add("Content-Type", "application/json")
+	w.Write(responseBody)
 }
 
 func spartaLambdaFunctions(api *sparta.API) []*sparta.LambdaAWSInfo {
 	var lambdaFunctions []*sparta.LambdaAWSInfo
-	lambdaFn := sparta.NewLambda(sparta.IAMRoleDefinition{}, helloSlackbot, nil)
+	lambdaFn := sparta.HandleAWSLambda(sparta.LambdaName(helloSlackbot),
+		http.HandlerFunc(helloSlackbot),
+		sparta.IAMRoleDefinition{})
 
 	if nil != api {
 		apiGatewayResource, _ := api.NewResource("/slack", lambdaFn)
